@@ -7,6 +7,14 @@
     "build": "npx esbuild src/index.js --bundle --platform=node --outfile=dist/index.js",
     "test": "node test/test.js"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/LeoonLiang/webpack-huaweiyun-obs.git"
+  },
+  "bugs": {
+    "url": "https://github.com/LeoonLiang/webpack-huaweiyun-obs/issues"
+  },
+  "homepage": "https://github.com/LeoonLiang/webpack-huaweiyun-obs#readme",
   "keywords": ["webpack", "huawei", "obs", "upload", "plugin", "cdn"],
   "author": "leoonliang",
   "license": "ISC",
