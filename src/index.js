@@ -1,157 +1,173 @@
 const fs = require('fs')
 const path = require('path')
-const co = require('co')
-const colors = require('colors')
-const _ = require('lodash')
-const glob = require('glob')
+const { glob } = require('glob')
+const _pLimit = require('p-limit')
+const pLimit = _pLimit.default || _pLimit
 const ObsClient = require('esdk-obs-nodejs')
 
-class WeipackHuaweiObs {
-  constructor(options) {
-    this.config = Object.assign({
-      test: false,
-      verbose: true,
-      dist: '',
-      deleteOrigin: false,
-      deleteEmptyDir: false,
-      timeout: 30 * 1000,
-      setObsPath: null,
-      setHeaders: null
-    }, options)
+class WebpackHuaweiObs {
+  constructor(options = {}) {
+    this.config = Object.assign(
+      {
+        test: false,
+        verbose: true,
+        dist: '',
+        deleteOrigin: false,
+        deleteEmptyDir: false,
+        timeout: 30 * 1000,
+        setObsPath: null,
+        setHeaders: null,
+        concurrency: 5, // 并发上传数量
+      },
+      options
+    )
 
-    this.configErrStr = this.checkOptions(options)
+    this.configErrStr = this.checkOptions(this.config)
   }
 
-  apply(compiler) {
-    if (compiler) {
-      this.doWithWebpack(compiler)
-    } else {
-      this.doWithoutWebpack()
+   apply(compiler) {
+    if (
+      !compiler ||
+      typeof compiler !== 'object' ||
+      !compiler.hooks ||
+      compiler.constructor?.name !== 'Compiler'
+    ) {
+      console.error('[WebpackHuaweiObs] Error: This plugin can only run inside Webpack.')
+      return
     }
-  }
 
-  doWithWebpack(compiler) {
-    compiler.hooks.afterEmit.tapPromise('WeipackHuaweiObs', (compilation) => {
+    compiler.hooks.afterEmit.tapPromise('WebpackHuaweiObs', async (compilation) => {
       if (this.configErrStr) {
         compilation.errors.push(new Error(this.configErrStr))
-        return Promise.resolve()
+        return
       }
 
       const outputPath = compiler.options.output.path
-      const { from = outputPath + (outputPath.endsWith(path.sep) ? '' : path.sep) + '**', verbose } = this.config
+      const from =
+        this.config.from ||
+        path.join(outputPath, '**')
+      const files = await this.getFiles(from)
 
-      const files = this.getFiles(from)
-      if (files.length) return this.upload(files, true, outputPath)
-      else {
-        verbose && console.log('no files to upload')
-        return Promise.resolve()
+      if (!files.length) {
+        this.config.verbose && console.log('[WebpackHuaweiObs] No files to upload.')
+        return
       }
+
+      console.log(`[WebpackHuaweiObs] Found ${files.length} files to upload.`)
+      await this.upload(files, true, outputPath)
     })
   }
 
-  doWithoutWebpack() {
-    if (this.configErrStr) return Promise.reject(new Error(this.configErrStr))
-    const { from, verbose } = this.config
-    const files = this.getFiles(from)
-    if (files.length) return this.upload(files)
-    else {
-      verbose && console.log('no files to upload')
-      return Promise.resolve()
-    }
-  }
-
-  upload(files, inWebpack, outputPath = '') {
+  async upload(files, inWebpack, outputPath = '') {
     const {
       dist,
       setHeaders,
       deleteOrigin,
       deleteEmptyDir,
       setObsPath,
-      timeout,
-      verbose,
       test,
-      server, ak, sk, bucket
+      verbose,
+      concurrency,
+      server,
+      ak,
+      sk,
+      bucket,
     } = this.config
 
     const client = new ObsClient({
       access_key_id: ak,
       secret_access_key: sk,
-      server
+      server,
     })
 
-    return new Promise((resolve, reject) => {
-      const o = this
-      const splitToken = inWebpack ? path.sep + outputPath.split(path.sep).pop() + path.sep : ''
+    const splitToken = inWebpack ? path.sep + outputPath.split(path.sep).pop() + path.sep : ''
+    const limit = pLimit(concurrency)
 
-      co(function* () {
-        let filePath, i = 0, len = files.length
-        while (i++ < len) {
-          filePath = files.shift()
+    const tasks = files.map((filePath) =>
+      limit(async () => {
+        const obsFilePath = (
+          dist +
+          ((setObsPath && setObsPath(filePath)) ||
+            (inWebpack && splitToken && filePath.split(splitToken)[1]) ||
+            '')
+        )
+          .replace(/\\/g, '/')
+          .replace(/\/\/+/g, '/')
+        if (test) {
+          console.log(`[TEST] ${filePath} -> ${obsFilePath}`)
+          return
+        }
 
-          let obsFilePath = (
-            dist +
-            (
-              (setObsPath && setObsPath(filePath)) ||
-              (inWebpack && splitToken && filePath.split(splitToken)[1]) ||
-              ''
-            )
-          ).replace(/\\/g, '/').replace(/\/\/+/g, '/')
-          if (test) {
-            console.log(filePath.gray, '\nis ready to upload to '.green + obsFilePath)
-            continue
-          }
-          const result = yield client.putObject({
-            Bucket: bucket,
-            Key: obsFilePath,
-            SourceFile: filePath,
-          })
+        const result = await client.putObject({
+          Bucket: bucket,
+          Key: obsFilePath,
+          SourceFile: filePath,
+          ...(setHeaders ? { Headers: setHeaders(filePath) } : {}),
+        })
 
-          if (result.CommonMsg.Status < 300) {
-            verbose && console.log(filePath.gray, '\nupload to '.green + obsFilePath + ' success,'.green)
-          } else {
-            console.log('failed: '.red, result.CommonMsg)
-          }
+        if (result.CommonMsg.Status < 300) {
+          verbose && console.log(`[OK] ${filePath} -> ${obsFilePath}`)
+        } else {
+          console.error(`[FAIL] ${filePath}`, result.CommonMsg)
+        }
 
-          if (deleteOrigin) {
-            fs.unlinkSync(filePath)
-            if (deleteEmptyDir && files.every(f => f.indexOf(path.dirname(filePath)) === -1))
-              o.deleteEmptyDir(filePath)
+        if (deleteOrigin) {
+          try {
+            await fs.promises.unlink(filePath)
+            if (deleteEmptyDir) await this.deleteEmptyDir(filePath)
+          } catch (err) {
+            console.warn(`[WARN] delete file failed: ${filePath}`, err.message)
           }
         }
-      }).then(resolve, err => {
-        console.log('upload failed'.red, err)
-        reject(err)
       })
-    })
+    )
+
+    try {
+      await Promise.all(tasks)
+      verbose && console.log(`[WebpackHuaweiObs] All uploads complete.`)
+    } catch (err) {
+      console.error(`[WebpackHuaweiObs] Upload failed:`, err)
+      throw err
+    }
   }
 
-  getFiles(exp) {
-    const _getFiles = function (exp) {
-      if (!exp || !exp.length) return []
-      exp = exp[0] === '!' && exp.substr(1) || exp
-      return glob.sync(exp, { nodir: true }).map(file => path.resolve(file))
+
+  async getFiles(exp) {
+    const _getFiles = async (pattern) => {
+      if (!pattern || !pattern.length) return []
+      const positive = pattern[0] === '!' ? pattern.substr(1) : pattern
+      const matched = await glob(positive, { nodir: true })
+      return matched.map((file) => path.resolve(file))
     }
 
-    return Array.isArray(exp)
-      ? exp.reduce((prev, next) => {
-          return next[0] === '!' ? _.without(prev, ..._getFiles(next)) : _.union(prev, _getFiles(next))
-        }, _getFiles(exp[0]))
-      : _getFiles(exp)
+    if (Array.isArray(exp)) {
+      let include = await _getFiles(exp[0])
+      for (const next of exp.slice(1)) {
+        const nextFiles = await _getFiles(next)
+        if (next.startsWith('!')) {
+          include = include.filter((f) => !nextFiles.includes(f))
+        } else {
+          include = Array.from(new Set([...include, ...nextFiles]))
+        }
+      }
+      return include
+    } else {
+      return await _getFiles(exp)
+    }
   }
 
-  deleteEmptyDir(filePath) {
+  /** 删除空目录 */
+  async deleteEmptyDir(filePath) {
     const dirname = path.dirname(filePath)
-    if (fs.existsSync(dirname) && fs.statSync(dirname).isDirectory()) {
-      fs.readdir(dirname, (err, files) => {
-        if (err) console.error(err)
-        else if (!files.length) {
-          fs.rmdir(dirname, () => {
-            this.config.verbose && console.log('empty directory deleted'.green, dirname)
-          })
-        }
-      })
-    }
+    try {
+      const files = await fs.promises.readdir(dirname)
+      if (!files.length) {
+        await fs.promises.rmdir(dirname)
+        this.config.verbose && console.log(`[Removed empty dir] ${dirname}`)
+      }
+    } catch (_) {}
   }
+
 
   checkOptions(options = {}) {
     const { from, server, ak, sk, bucket } = options
@@ -161,13 +177,13 @@ class WeipackHuaweiObs {
     if (!sk) errStr += '\nsk (secret_access_key) not specified'
     if (!bucket) errStr += '\nbucket not specified'
     if (Array.isArray(from)) {
-      if (from.some(g => typeof g !== 'string')) errStr += '\neach item in from should be a glob string'
+      if (from.some((g) => typeof g !== 'string')) errStr += '\neach item in from should be a glob string'
     } else {
-      let fromType = typeof from
+      const fromType = typeof from
       if (!['undefined', 'string'].includes(fromType)) errStr += '\nfrom should be string or array'
     }
     return errStr
   }
 }
 
-module.exports = WeipackHuaweiObs
+module.exports = WebpackHuaweiObs

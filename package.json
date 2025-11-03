@@ -26,11 +26,9 @@
   "author": "leoonliang",
   "license": "ISC",
   "dependencies": {
-    "co": "^4.6.0",
-    "colors": "^1.4.0",
     "esdk-obs-nodejs": "^3.25.6",
     "glob": "^11.0.3",
-    "lodash": "^4.17.21"
+    "p-limit": "^7.2.0"
   },
   "devDependencies": {
     "esbuild": "^0.25.11"
