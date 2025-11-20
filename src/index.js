@@ -58,6 +58,29 @@ class WebpackHuaweiObs {
     })
   }
 
+  async doWidthoutWebpack() {
+    if (this.configErrStr) {
+      throw new Error(this.configErrStr)
+    }
+
+    const { from, verbose } = this.config
+
+    const files = await this.getFiles(from)
+
+    if (!files.length) {
+      verbose && console.log('[WebpackHuaweiObs] No files to upload.')
+      return
+    }
+
+    console.log(`[WebpackHuaweiObs] Found ${files.length} files to upload.`)
+
+    await this.upload(files, false)
+
+    console.log('[WebpackHuaweiObs] Upload finished.')
+
+    return true
+  }
+
   async upload(files, inWebpack, outputPath = '') {
     const {
       dist,

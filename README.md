@@ -60,6 +60,6 @@ module.exports = {
 
 ## 来源与改写说明
 - 本插件基于 [webpack-aliyun-oss](https://www.npmjs.com/package/webpack-aliyun-oss) 改写，适配华为云生态。
-- 区别于 webpack-aliyun-oss，该插件只能 webpack 中使用.
+- 区别于 webpack-aliyun-oss，在 webpack 外需要单独调用 doWidthoutWebpack
 - 并发上传
 
