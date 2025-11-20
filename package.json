@@ -1,6 +1,6 @@
 {
   "name": "webpack-huaweiyun-obs",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "一个用于 Webpack 的自动上传插件，将构建产物上传至华为云 OBS。",
   "main": "dist/index.js",
   "scripts": {
